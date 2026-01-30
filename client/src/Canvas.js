@@ -1,5 +1,12 @@
 import {useRef, useEffect,useState} from 'react'
 
+const hexToRgb = (hex) => {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return { r, g, b, a: 255 }; // We add Alpha (255 = solid)
+};
+
 export default function Canvas(props){
     const canvasRef = useRef(null);
     const isDrawing = useRef(false);
@@ -10,10 +17,36 @@ export default function Canvas(props){
     const [undostack, setUndoStack] = useState([]);
     const [redostack, setRedoStack] = useState([]);
 
+    const [tool, setTool] = useState('brush');
+
     const [brushType, setBrushType] = useState('marker')
 
     const [color, setColor] = useState('#000000');
     const [size, setSize] = useState(5);
+
+    const saveDrawing = async() =>{
+        const canvas = canvasRef.current;
+        const dataUrl = canvas.toDataURL();
+
+        try{
+            const response = await fetch('http://localhost:5000/save',{
+                method: 'POST',
+                headers:{ 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: dataUrl}),
+            });
+            const result = await response.json();
+            if(response.ok){ 
+                alert("Drawing saved to server!")
+            }else{
+                alert("Save Failed: " + result.message);
+            }
+        }catch(error){
+            console.error("Error saving drawing:", error);
+            alert("Could not connect to the server.");  
+        }
+
+    };
+
     const restoreCanvas = (dataUrl) =>{
         const canvas = canvasRef.current;
         const ctx = ctxRef.current;
@@ -30,6 +63,67 @@ export default function Canvas(props){
             ctx.drawImage(img,0,0);
         };
     };
+
+    const getPixelColor = (imgData, x, y, width) => {
+        const i = (y * width + x) * 4
+        return {
+            r: imgData[i],
+            g: imgData[i+1],
+            b: imgData[i+2],
+            a: imgData[i+3]
+        }
+    }
+    const colorsMatch = (color1,color2) =>{
+        if(color1.r == color2.r && color1.g == color2.g && color1.b == color2.b && color1.a == color2.a){
+            return true;
+        }else{
+            return false;
+        }
+    }
+
+    const setPixelColor = (imgData, x, y, width, color) =>{
+        const i = (y * width + x) * 4;
+        imgData[i] = color.r;
+        imgData[i + 1] = color.g
+        imgData[i + 2] = color.b
+        imgData[i + 3] = color.a
+    }
+
+    const floodFill = (startX, startY, fillColorHex) => {
+        const canvas = canvasRef.current;
+        const ctx = ctxRef.current;
+        const width = canvas.width;
+        const height = canvas.height;
+
+        const imgData = ctx.getImageData(0,0,width,height);
+        const pixels = imgData.data;
+
+        const fillRGB = hexToRgb(fillColorHex);
+        const targetColor = getPixelColor(pixels, startX, startY,width);
+
+        if(colorsMatch(fillRGB,targetColor)){return}
+
+        const queue = [[startX,startY]]
+
+        while(queue.length > 0){
+            const [x,y] = queue.shift();
+
+            if(x < 0 || x >= width || y < 0 || y >= height){continue}
+            const currentColor = getPixelColor(pixels, x, y, width);
+            if(colorsMatch(targetColor,currentColor)){
+                setPixelColor(pixels, x, y, width, fillRGB);
+
+                queue.push([x + 1, y]);
+                queue.push([x - 1, y]);
+                queue.push([x, y + 1]);
+                queue.push([x, y - 1]);
+            }
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+
+        setUndoStack(prev => [...prev, canvas.toDataURL()]);
+    }
 
     const undoAction = ()=>{
         if (undostack.length == 0) return;
@@ -58,6 +152,23 @@ export default function Canvas(props){
         cursor: 'pointer'
     });
 
+    useEffect(() => {
+        const loadLastDrawing = async () => {
+            try {
+                const response = await fetch('http://localhost:5000/load');
+                const data = await response.json();
+
+                if (data.image) {
+                    restoreCanvas(data.image);
+                    setUndoStack([data.image]);
+                }
+            } catch (err) {
+                console.error("Initial load failed:", err);
+            }
+        };
+        loadLastDrawing();
+    }, []);
+
 
 
     useEffect(()=>{
@@ -72,7 +183,15 @@ export default function Canvas(props){
         ctx.lineWidth = size;
         ctx.lineCap = 'round'
 
+
         const startDrawing = (e)=>{
+            if(tool == 'bucket'){
+                const rect = canvasRef.current.getBoundingClientRect();
+                const x = Math.floor(e.clientX - rect.left);
+                const y = Math.floor(e.clientY - rect.top);
+                floodFill(x, y, color);
+                return;
+            }
             isDrawing.current = true
             const rect = canvas.getBoundingClientRect()
             prevX.current = e.clientX - rect.left
@@ -135,7 +254,7 @@ export default function Canvas(props){
             canvas.removeEventListener('mousemove',draw);
             canvas.removeEventListener('mouseup',stopDrawing)
         }
-    },[color, size,brushType]);
+    },[color, size,brushType,tool]);
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', backgroundColor: '#f0f0f0',width: '100vw', height: '100vh' }}>
@@ -147,6 +266,13 @@ export default function Canvas(props){
                     <button onClick={redoAction} disabled={redostack.length === 0}>
                         Redo
                     </button>
+
+                    <button 
+                        onClick={saveDrawing} 
+                        style={{ backgroundColor: '#4CAF50', color: 'white', fontWeight: 'bold' }}
+                    >
+                        💾 Save Drawing
+                    </button>
                 </div>
             <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '10px' }}>
                 <div style={{  display: 'flex', height: '100vh', }}>
@@ -156,6 +282,18 @@ export default function Canvas(props){
                             value={color} 
                             onChange={(e) => setColor(e.target.value)} 
                         />
+                        <button 
+                                style={{ backgroundColor: tool === 'bucket' ? '#e0e0e0' : 'transparent' }}
+                                onClick={() => setTool('bucket')}
+                            >
+                                🪣 Bucket
+                        </button>
+                        <button 
+                            style={{ backgroundColor: tool === 'brush' ? '#e0e0e0' : 'transparent' }}
+                            onClick={() => setTool('brush')}
+                        >
+                            🖌️ Brush
+                        </button>
                         <button 
                             style={brushButtonStyle('marker')} 
                             onClick={() => setBrushType('marker')}

@@ -1,12 +1,34 @@
 services:
-  app:
-    build: .
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
     ports:
       - "3000:3000"
     volumes:
-      - .:/app
+      - ./client:/app
       - /app/node_modules
     environment:
       - CHOKIDAR_USEPOLLING=true  
     stdin_open: true 
     tty: true
+  backend:
+    build:
+      context: ./server
+    ports:
+      - "5000:5000"
+    environment:
+      - CHOKIDAR_USEPOLLING=true 
+    stdin_open: true 
+    tty: true
+    volumes:
+      - ./server:/usr/src/app     
+      - /usr/src/app/node_modules
+  db:
+    image: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+volumes:
+  mongo-data:
